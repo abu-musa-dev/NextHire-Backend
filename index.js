@@ -51,25 +51,151 @@ async function run() {
 run();
 
 // <-------Middleware to verify JWT---------->
+// const verifyToken = (req, res, next) => {
+//   const token = req.header("Authorization");
+
+//   console.log("Token from header:", token); // Check if token is being sent
+
+//   if (!token) {
+//     return res.status(401).json({ message: "Access denied. No token provided." });
+//   }
+
+//   try {
+//     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+//     console.log("Decoded JWT:", decoded); // Log the decoded JWT for debugging
+//     req.user = decoded;  // Attach user data to request
+//     next();
+//   } catch (err) {
+//     console.error("❌ Invalid token:", err);
+//     res.status(400).json({ message: "Invalid token" });
+//   }
+// };
+
+
 const verifyToken = (req, res, next) => {
-  const token = req.header("Authorization");
+  const authHeader = req.header("Authorization");  // এখানে পুরো header আসবে
 
-  console.log("Token from header:", token); // Check if token is being sent
-
-  if (!token) {
+  if (!authHeader) {
     return res.status(401).json({ message: "Access denied. No token provided." });
   }
 
+  // Bearer token হলে Bearer অংশ বাদ দিতে হবে
+  const token = authHeader.startsWith("Bearer ") ? authHeader.split(" ")[1] : authHeader;
+
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    console.log("Decoded JWT:", decoded); // Log the decoded JWT for debugging
-    req.user = decoded;  // Attach user data to request
+    req.user = decoded;
     next();
   } catch (err) {
-    console.error("❌ Invalid token:", err);
+    console.error("Invalid token:", err);
     res.status(400).json({ message: "Invalid token" });
   }
 };
+
+
+// POST /applications - নতুন application জমা দেওয়া
+// POST /applications — নতুন application তৈরি করা
+app.post('/applications', async (req, res) => {
+  try {
+    const application = req.body;
+
+    // Validate request body
+    if (!application.jobId || !application.applicantEmail || !application.applicantName) {
+      return res.status(400).json({ error: "jobId, applicantEmail, applicantName প্রয়োজন" });
+    }
+
+    // jobId দিয়ে job খুঁজে নেওয়া
+    const job = await jobsCollection.findOne({ _id: new ObjectId(application.jobId) });
+    if (!job) {
+      return res.status(404).json({ error: "Job not found" });
+    }
+
+    // posterEmail সেট করা হচ্ছে job.createdBy থেকে
+    application.posterEmail = job.createdBy || null;
+
+    // date যোগ করে দিলে ভালো হয়
+    application.date = new Date().toISOString();
+
+    // মঙ্গোতে সেভ করা
+    const result = await applicationsCollection.insertOne(application);
+    res.status(201).json({ insertedId: result.insertedId });
+  } catch (error) {
+    console.error("Error submitting application:", error);
+    res.status(500).json({ error: "Failed to apply" });
+  }
+});
+
+// GET /applications — email দিয়ে তার applications আনা
+app.get('/applications', async (req, res) => {
+  try {
+    const email = req.query.email;
+    if (!email) {
+      return res.status(400).json({ error: "Query parameter email প্রয়োজন" });
+    }
+
+    // applicantEmail ফিল্ড দিয়ে filter
+    const apps = await applicationsCollection
+      .find({ applicantEmail: email })
+      .sort({ date: -1 })        // চাইলে নতুন থেকে পুরনো সাজাতে
+      .toArray();
+
+    res.json(apps);
+  } catch (error) {
+    console.error("Error fetching applications:", error);
+    res.status(500).json({ error: "Failed to fetch applications" });
+  }
+});
+
+
+
+
+//----------fixed
+app.get('/applications/by-poster', async (req, res) => {
+  try {
+    const posterEmail = req.query.email;
+    if (!posterEmail) {
+      return res.status(400).json({ error: "email query parameter প্রয়োজন" });
+    }
+
+    const apps = await applicationsCollection
+      .find({ posterEmail })
+      .sort({ date: -1 })
+      .toArray();
+
+    res.json(apps);
+  } catch (error) {
+    console.error("Error fetching applications by poster:", error);
+    res.status(500).json({ error: "Failed to fetch applications" });
+  }
+});
+
+//--------------------------
+// PATCH: Update status of an application
+app.patch('/applications/:id/status', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!status) {
+      return res.status(400).json({ error: "Status field প্রয়োজন" });
+    }
+
+    const result = await applicationsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { status } }
+    );
+
+    if (result.modifiedCount === 0) {
+      return res.status(404).json({ error: "Application not found or unchanged" });
+    }
+
+    res.json({ message: "Status updated successfully" });
+  } catch (error) {
+    console.error("Error updating application status:", error);
+    res.status(500).json({ error: "Failed to update status" });
+  }
+});
+
 
 
 // <-------Login route with JWT creation-------->
@@ -183,44 +309,35 @@ app.get('/dashboard', verifyToken, (req, res) => {
 });
 
 
-app.get('/applications', async (req, res) => {
-  try {
-    const posterEmail = req.query.posterEmail;
-    console.log("Poster email from request:", posterEmail);  // Debug log
-    const apps = await applicationsCollection.find({ posterEmail }).toArray();
-    res.send(apps);
-  } catch (error) {
-    console.error("Error fetching applications:", error);
-    res.status(500).send({ error: "Failed to fetch applications" });
-  }
-});
 
 
 
-app.patch('/applications/:id/status', async (req, res) => {
-  const id = req.params.id;
-  const { status } = req.body;
 
-  if (!status) {
-    return res.status(400).send({ message: "Status is required" });
-  }
 
-  try {
-    const result = await applicationsCollection.updateOne(
-      { _id: new ObjectId(id) },
-      { $set: { status } }
-    );
+// app.patch('/applications/:id/status', async (req, res) => {
+//   const id = req.params.id;
+//   const { status } = req.body;
 
-    if (result.modifiedCount === 0) {
-      return res.status(404).send({ message: "Application not found or no change made" });
-    }
+//   if (!status) {
+//     return res.status(400).send({ message: "Status is required" });
+//   }
 
-    res.send({ message: "Status updated successfully" });
-  } catch (error) {
-    console.error("❌ Error updating status:", error);
-    res.status(500).send({ message: "Failed to update status" });
-  }
-});
+//   try {
+//     const result = await applicationsCollection.updateOne(
+//       { _id: new ObjectId(id) },
+//       { $set: { status } }
+//     );
+
+//     if (result.modifiedCount === 0) {
+//       return res.status(404).send({ message: "Application not found or no change made" });
+//     }
+
+//     res.send({ message: "Status updated successfully" });
+//   } catch (error) {
+//     console.error("❌ Error updating status:", error);
+//     res.status(500).send({ message: "Failed to update status" });
+//   }
+// });
 
 // Get jobs by user's email
 app.get('/jobs', async (req, res) => {
@@ -240,22 +357,33 @@ app.get('/jobs', async (req, res) => {
   }
 });
 
-app.get("/jobs/:id", async (req, res) => {
+app.get('/jobs/:id', async (req, res) => {
   const id = req.params.id;
-  try {
-    const job = await jobsCollection.findOne({ _id: new ObjectId(id) }); // ✅ ObjectId হওয়া লাগবে
-    if (!job) {
-      return res.status(404).send({ message: "Job not found" });
-    }
-    res.send(job);
-  } catch (err) {
-    console.error("❌ Error fetching job by ID:", err);
-    res.status(500).send({ message: "Internal server error" });
-  }
+  const job = await jobsCollection.findOne({ _id: new ObjectId(id) });
+  res.send(job);
 });
 
+// GET all job seekers
 
 
+
+
+app.post("/jobs", async (req, res) => {
+  const job = req.body;
+
+  try {
+    if (!jobsCollection) {
+      return res.status(500).send({ message: "Database not initialized" });
+    }
+
+    // 🔓 JWT ছাড়া সরাসরি body থেকে email নাও
+    const result = await jobsCollection.insertOne(job);
+    res.status(200).send(result);
+  } catch (err) {
+    console.error("❌ Error posting job:", err);
+    res.status(500).send({ message: "Failed to post job" });
+  }
+});
 
 app.delete("/jobs/:id", async (req, res) => {
   const { id } = req.params;
@@ -302,31 +430,7 @@ app.patch("/jobs/:id/status", async (req, res) => {
 
 
 
-app.post('/applications', async (req, res) => {
-  try {
-    const application = req.body;
 
-    // 🔍 Find the job using jobId
-    const job = await jobsCollection.findOne({ _id: new ObjectId(application.jobId) });
-
-    // 🟩 এখানে console log গুলো বসাও
-    console.log("🔎 Job found:", job);
-    console.log("📧 job.createdBy:", job?.createdBy);
-
-    if (!job) {
-      return res.status(404).send({ error: "Job not found" });
-    }
-
-    // ✅ Set posterEmail
-    application.posterEmail = job.createdBy || null;
-
-    const result = await applicationsCollection.insertOne(application);
-    res.status(201).send(result);
-  } catch (error) {
-    console.error("Error submitting application:", error);
-    res.status(500).send({ error: "Failed to apply" });
-  }
-});
 
 
 
